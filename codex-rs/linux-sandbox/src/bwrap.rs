@@ -77,6 +77,8 @@ pub(crate) struct BwrapOptions {
     /// Whether the host exposes WSLg's duplicate distro root, which must be hidden
     /// when constructing a restricted filesystem view.
     pub mask_wslg_distro: bool,
+    /// Internal probes must not inherit the actual command's device request.
+    pub amd_device_request: crate::amd_gpu::DeviceRequest,
     /// Optional maximum depth for expanding unreadable glob patterns with ripgrep.
     ///
     /// Keep this uncapped by default so existing nested deny-read matches are
@@ -91,6 +93,7 @@ impl Default for BwrapOptions {
             network_mode: BwrapNetworkMode::FullAccess,
             mask_wsl_interop: false,
             mask_wslg_distro: false,
+            amd_device_request: crate::amd_gpu::DeviceRequest::Disabled,
             glob_scan_max_depth: None,
         }
     }
@@ -366,6 +369,13 @@ fn create_bwrap_flags(
         args.push("--tmpfs".to_string());
         args.push("/proc".to_string());
     }
+    // Explicitly grant only the validated AMD character-device pair. Read
+    // denials still win; this never mounts /dev wholesale or changes networking.
+    args.extend(crate::amd_gpu::configured_device_mount_arguments(
+        options.amd_device_request,
+        file_system_sandbox_policy,
+        sandbox_policy_cwd,
+    )?);
     // Request a user namespace explicitly rather than relying on bubblewrap's
     // auto-enable behavior, which is skipped when the caller runs as uid 0.
     // This also blocks host procfs root/cwd/fd links through ptrace permission

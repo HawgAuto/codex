@@ -430,6 +430,9 @@ fn run_bwrap_with_proc_fallback(
         options.mount_proc = false;
     }
 
+    // The internal /proc probe above must not inspect or expose GPU devices.
+    // Enable the operator's validated request only for the actual command.
+    options.amd_device_request = crate::amd_gpu::DeviceRequest::CommandEnvironment;
     let mut bwrap_args = build_bwrap_argv(
         inner,
         file_system_sandbox_policy,
