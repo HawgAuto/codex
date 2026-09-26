@@ -74,7 +74,15 @@ pub(crate) fn apply_permission_profile_to_current_thread(
     }
 
     if let Some(mode) = network_seccomp_mode {
-        install_network_seccomp_filter_on_current_thread(mode, managed_network)?;
+        let interface_discovery = crate::local_interface::requested(
+            mode == NetworkSeccompMode::ProxyRouted,
+            managed_network.is_some_and(|context| context.dangerously_allow_all_unix_sockets),
+        )?;
+        install_network_seccomp_filter_on_current_thread(
+            mode,
+            managed_network,
+            interface_discovery,
+        )?;
     }
 
     if apply_landlock_fs && !file_system_sandbox_policy.has_full_disk_write_access() {
@@ -179,6 +187,7 @@ fn install_filesystem_landlock_rules_on_current_thread(
 fn install_network_seccomp_filter_on_current_thread(
     mode: NetworkSeccompMode,
     managed_network: Option<&ManagedNetworkSandboxContext>,
+    interface_discovery: bool,
 ) -> std::result::Result<(), SandboxErr> {
     fn deny_syscall(rules: &mut BTreeMap<i64, Vec<SeccompRule>>, nr: i64) {
         rules.insert(nr, vec![]); // empty rule vec = unconditional match
@@ -257,6 +266,14 @@ fn install_network_seccomp_filter_on_current_thread(
                     libc::AF_UNIX as u64,
                 )?);
             }
+            if interface_discovery {
+                denied_socket_conditions.push(SeccompCondition::new(
+                    0,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Ne,
+                    libc::AF_NETLINK as u64,
+                )?);
+            }
             let deny_non_ip_socket = SeccompRule::new(denied_socket_conditions)?;
             let deny_non_unix_socketpair = SeccompRule::new(vec![SeccompCondition::new(
                 0,
@@ -264,7 +281,26 @@ fn install_network_seccomp_filter_on_current_thread(
                 SeccompCmpOp::Ne,
                 libc::AF_UNIX as u64,
             )?])?;
-            rules.insert(libc::SYS_socket, vec![deny_non_ip_socket]);
+            let mut denied_socket_rules = vec![deny_non_ip_socket];
+            if interface_discovery {
+                // Interface enumeration uses NETLINK_ROUTE. No other netlink
+                // protocol is granted, and socketpair remains Unix-only.
+                denied_socket_rules.push(SeccompRule::new(vec![
+                    SeccompCondition::new(
+                        0,
+                        SeccompCmpArgLen::Dword,
+                        SeccompCmpOp::Eq,
+                        libc::AF_NETLINK as u64,
+                    )?,
+                    SeccompCondition::new(
+                        2,
+                        SeccompCmpArgLen::Dword,
+                        SeccompCmpOp::Ne,
+                        libc::NETLINK_ROUTE as u64,
+                    )?,
+                ])?);
+            }
+            rules.insert(libc::SYS_socket, denied_socket_rules);
             rules.insert(libc::SYS_socketpair, vec![deny_non_unix_socketpair]);
         }
         NetworkSeccompMode::VmSocketRestricted => {
@@ -298,6 +334,10 @@ fn install_network_seccomp_filter_on_current_thread(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "local_interface_seccomp_tests.rs"]
+mod local_interface_seccomp_tests;
 
 #[cfg(test)]
 mod tests {
